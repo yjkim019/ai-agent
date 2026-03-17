@@ -6,6 +6,7 @@ import httpx
 from elasticsearch import Elasticsearch
 from langchain.tools import tool
 from langchain_elasticsearch import ElasticsearchRetriever
+from opik import track
 
 # ---------------------------------------------------------------------------
 # Elasticsearch 연결 설정
@@ -147,6 +148,7 @@ def _get_retriever() -> ElasticsearchRetriever:
 
 
 @tool
+@track(name="search_symptoms")
 def search_symptoms(symptoms: str) -> str:
     """주어진 증상(쉼표로 구분)을 기반으로 Elasticsearch에서 관련 의료 정보를 검색합니다."""
     retriever = _get_retriever()
@@ -165,6 +167,7 @@ def search_symptoms(symptoms: str) -> str:
     return "\n\n".join(results)
 
 @tool
+@track(name="get_medication_info")
 def get_medication_info(medication_name: str) -> str:
     """약물 이름을 받아 식품의약품안전승인러비스(e약은요) API에서 효능, 사용법, 주의사항, 부작용, 보관법 등을 조회합니다."""
     try:
@@ -223,6 +226,7 @@ def get_medication_info(medication_name: str) -> str:
     return "\n".join(lines).strip()
 
 @tool
+@track(name="find_nearby_hospitals")
 def find_nearby_hospitals(location: str, specialty: str = "일반") -> str:
     """
     지역명과 병원 종별(specialty)을 기반으로 건강보험심사평가원 병원정보서비스에서 병원 목록을 조회합니다.

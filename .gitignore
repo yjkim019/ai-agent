@@ -161,3 +161,7 @@ cython_debug/
 
 # Brain / Artifacts
 .gemini/
+
+# SQLite runtime files
+checkpoints.db-shm
+checkpoints.db-wal

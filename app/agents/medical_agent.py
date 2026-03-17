@@ -7,6 +7,7 @@ from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from opik import track
 
 from app.agents.tools import search_symptoms, get_medication_info, find_nearby_hospitals
 from app.agents.prompts import MEDICAL_SYSTEM_PROMPT
@@ -32,6 +33,7 @@ class ChatResponse:
 # ---------------------------------------------------------------------------
 
 
+@track(name="create_medical_agent")
 def create_medical_agent(model: ChatOpenAI, checkpointer: BaseCheckpointSaver[Any] = None):
     """
     ChatOpenAI 모델과 checkpointer를 받아 의료 에이전트를 생성합니다.
