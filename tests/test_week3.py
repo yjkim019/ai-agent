@@ -1,6 +1,12 @@
 """3주차: LangGraph StateGraph + PDF RAG 테스트"""
 
 
+def test_symptom_pipeline_graph_importable():
+    from app.agents.symptom_pipeline import build_symptom_graph
+    graph = build_symptom_graph()
+    assert graph is not None
+
+
 def test_script_config_dog_domain():
     import importlib.util, os
     spec = importlib.util.spec_from_file_location(
