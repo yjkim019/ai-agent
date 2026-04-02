@@ -50,23 +50,33 @@ class _SearchState(TypedDict):
     result: str
 
 
+_RRF_K = 60  # RRF 상수 (일반적으로 60 사용)
+
+
+def _rrf_score(ranks: list[int]) -> float:
+    """Reciprocal Rank Fusion 점수 계산."""
+    return sum(1.0 / (_RRF_K + r) for r in ranks)
+
+
 def _search_node(state: _SearchState) -> _SearchState:
-    """BM25 + kNN 하이브리드 검색을 수행합니다."""
+    """BM25 + kNN 하이브리드 검색 + RRF 재정렬."""
     query = state["query"]
     try:
         es = _get_es_client()
-        hits_map: dict[str, dict] = {}  # doc_id → hit
+        # doc_id → {"hit": hit, "ranks": [rank_from_bm25, rank_from_knn]}
+        hits_map: dict[str, dict] = {}
 
         # 1) BM25 검색
         bm25_resp = es.search(
             index=BM25_INDEX_NAME,
             body={
                 "query": {"match": {CONTENT_FIELD: {"query": query, "operator": "or"}}},
-                "size": _TOP_K,
+                "size": _TOP_K * 2,
             },
         )
-        for hit in bm25_resp["hits"]["hits"]:
-            hits_map[hit["_id"]] = hit
+        for rank, hit in enumerate(bm25_resp["hits"]["hits"], 1):
+            doc_id = hit["_id"]
+            hits_map[doc_id] = {"hit": hit, "ranks": [rank]}
 
         # 2) kNN 벡터 검색
         query_vector = _get_query_vector(query)
@@ -77,21 +87,29 @@ def _search_node(state: _SearchState) -> _SearchState:
                     "knn": {
                         "field": "content_vector",
                         "query_vector": query_vector,
-                        "k": _TOP_K,
-                        "num_candidates": 50,
+                        "k": _TOP_K * 2,
+                        "num_candidates": 100,
                     },
-                    "size": _TOP_K,
+                    "size": _TOP_K * 2,
                 },
             )
-            for hit in knn_resp["hits"]["hits"]:
-                if hit["_id"] not in hits_map:
-                    hits_map[hit["_id"]] = hit
+            for rank, hit in enumerate(knn_resp["hits"]["hits"], 1):
+                doc_id = hit["_id"]
+                if doc_id in hits_map:
+                    hits_map[doc_id]["ranks"].append(rank)
+                else:
+                    hits_map[doc_id] = {"hit": hit, "ranks": [rank]}
 
         if not hits_map:
             return {"query": query, "result": f"'{query}'에 대한 관련 정보를 찾을 수 없습니다."}
 
-        # 3) 결과 포맷 (점수 높은 순으로 최대 TOP_K개)
-        hits = sorted(hits_map.values(), key=lambda h: h.get("_score") or 0, reverse=True)[:_TOP_K]
+        # 3) RRF 점수로 재정렬
+        scored = sorted(
+            hits_map.values(),
+            key=lambda v: _rrf_score(v["ranks"]),
+            reverse=True,
+        )[:_TOP_K]
+        hits = [v["hit"] for v in scored]
         results: list[str] = []
         for i, hit in enumerate(hits, 1):
             source = hit.get("_source", {})
