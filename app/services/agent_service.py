@@ -90,11 +90,21 @@ class AgentService:
 
             custom_logger.info(f"사용자 메시지: {user_messages}")
 
-            # IMP: LangGraph 에이전트에 사용자의 메시지를 HumanMessage 형태로 전달하고, 
+            # 체크포인터에 기존 상태가 있으면 새 대화가 아니므로 question_count를 넘기지 않는다.
+            # question_count를 항상 0으로 초기화하면 체크포인터에 저장된 카운트가 덮어씌워진다.
+            config = {"configurable": {"thread_id": str(thread_id)}}
+            existing_state = await self.checkpointer.aget(config)
+            is_new_thread = existing_state is None
+
+            input_state = {"messages": [HumanMessage(content=user_messages)]}
+            if is_new_thread:
+                input_state["question_count"] = 0
+
+            # IMP: LangGraph 에이전트에 사용자의 메시지를 HumanMessage 형태로 전달하고,
             # thread_id를 통해 대화 문맥(Context)을 유지하며 비동기 스트리밍(astream)으로 실행하는 구현.
             agent_stream = self.agent.astream(
-                {"messages": [HumanMessage(content=user_messages)]},
-                config={"configurable": {"thread_id": str(thread_id)}},
+                input_state,
+                config=config,
                 stream_mode="updates",
             )
 
@@ -253,7 +263,15 @@ class AgentService:
 
             # StateGraph: generate_report 노드 — 최종 리포트 반환
             elif step == "generate_report":
-                events.append(self._done_event(content=message.content))
+                import json as _json
+                try:
+                    parsed = _json.loads(message.content)
+                    content = parsed.get("content", message.content)
+                    metadata = parsed.get("metadata", {})
+                except (ValueError, AttributeError):
+                    content = message.content
+                    metadata = {}
+                events.append(self._done_event(content=content, metadata=metadata))
 
         return events
 
