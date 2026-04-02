@@ -7,3 +7,12 @@ def test_es_index_names():
 def test_search_symptoms_tool_name():
     from app.agents.search_agent import search_symptoms
     assert search_symptoms.name == "search_symptoms"
+
+
+def test_dog_symptom_prompt_keywords():
+    from app.agents.prompts import DOG_SYMPTOM_SYSTEM_PROMPT
+    assert "강아지" in DOG_SYMPTOM_SYSTEM_PROMPT
+    assert "긴급도" in DOG_SYMPTOM_SYSTEM_PROMPT
+    assert "search_symptoms" in DOG_SYMPTOM_SYSTEM_PROMPT
+    assert "get_pet_breed_info" in DOG_SYMPTOM_SYSTEM_PROMPT
+    assert "find_nearby_vet" in DOG_SYMPTOM_SYSTEM_PROMPT
