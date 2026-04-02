@@ -8,8 +8,8 @@ import uuid
 
 from app.utils.logger import log_execution, custom_logger
 
-from langchain_core.messages import HumanMessage
 from langgraph.errors import GraphRecursionError
+
 
 def _configure_opik():
     """settings.OPIK 값을 기반으로 Opik 환경변수를 설정합니다."""
@@ -17,7 +17,7 @@ def _configure_opik():
 
     if settings.OPIK is None:
         return
-    
+
     opik_settings = settings.OPIK
     if opik_settings.URL_OVERRIDE:
         os.environ["OPIK_URL_OVERRIDE"] = opik_settings.URL_OVERRIDE
@@ -28,7 +28,8 @@ def _configure_opik():
     if opik_settings.PROJECT:
         os.environ["OPIK_PROJECT_NAME"] = opik_settings.PROJECT
 
-_configure_opik()                
+
+_configure_opik()
 
 
 class AgentService:
@@ -37,7 +38,6 @@ class AgentService:
         from app.core.config import settings
         from pydantic import SecretStr
 
-        # LLM 초기화
         self.model = ChatOpenAI(
             model=settings.OPENAI_MODEL,
             api_key=SecretStr(settings.OPENAI_API_KEY),
@@ -46,16 +46,13 @@ class AgentService:
         self.opik_tracer = None
         if settings.OPIK is not None:
             from opik.integrations.langchain import OpikTracer
-
             self.opik_tracer = OpikTracer(
                 tags=["dog-symptom-agent"],
-                metadata={"model": settings.OPENAI_MODEL}
+                metadata={"model": settings.OPENAI_MODEL},
             )
 
-        # 대화 이력 저장소: process_query 첫 호출 시 async 초기화
         self.checkpointer = None
-        self.agent = None
-        self.progress_queue: asyncio.Queue = asyncio.Queue()
+        self.main_chain = None  # MainChain (LangChain + LangGraph 서브모듈)
 
     async def _init_checkpointer(self):
         """SQLite checkpointer 비동기 초기화 (첫 호출 시 한 번만 실행)"""
@@ -66,174 +63,80 @@ class AgentService:
         conn = await aiosqlite.connect("checkpoints.db")
         self.checkpointer = AsyncSqliteSaver(conn)
 
-    def _create_agent(self, thread_id: uuid.UUID = None):
-        """강아지 증상 분석 에이전트 생성"""
-        from app.agents.dog_agent import create_dog_agent
+    def _init_main_chain(self):
+        """MainChain 초기화 (checkpointer 준비 후 한 번만 실행)"""
+        if self.main_chain is not None:
+            return
+        from app.agents.main_chain import MainChain
         assert self.checkpointer is not None, "checkpointer가 초기화되지 않았습니다."
-        self.agent = create_dog_agent(
-            model=self.model,
-            checkpointer=self.checkpointer,
-        )
+        self.main_chain = MainChain(llm=self.model, checkpointer=self.checkpointer)
+
         if self.opik_tracer is not None:
             from opik.integrations.langchain import track_langgraph
-            self.agent = track_langgraph(self.agent, self.opik_tracer)
-        
-    async def _run_general_chain(self, user_messages: str):
-        """인텐트가 general일 때 LangChain으로 직접 응답하는 async generator."""
-        from app.agents.traffic_agent import run_general_chain
-        loop = asyncio.get_event_loop()
-        content = await loop.run_in_executor(None, run_general_chain, user_messages)
-        yield self._done_event(content=content)
+            self.main_chain.symptom_graph = track_langgraph(
+                self.main_chain.symptom_graph, self.opik_tracer
+            )
 
+    # ------------------------------------------------------------------
     # 실제 대화 로직
+    # ------------------------------------------------------------------
+
     @log_execution
     async def process_query(self, user_messages: str, thread_id: uuid.UUID):
-        """인텐트 분류 후 LangGraph(dog_symptom) 또는 LangChain(general)으로 분기합니다."""
+        """MainChain을 통해 쿼리를 처리합니다.
+
+        - MainChain이 인텐트를 분류하고 general/dog_symptom 경로를 선택합니다.
+        - dog_symptom → LangGraph 서브모듈(StateGraph)로 위임합니다.
+        """
         try:
-            # checkpointer 초기화 (SQLite 연결, 첫 호출 시만 실행)
             await self._init_checkpointer()
-            # 에이전트 초기화 (한 번만)
-            self._create_agent(thread_id=thread_id)
+            self._init_main_chain()
 
             custom_logger.info(f"사용자 메시지: {user_messages}")
 
-            # 체크포인터에 기존 상태가 있으면 새 대화가 아니므로 question_count를 넘기지 않는다.
-            # question_count를 항상 0으로 초기화하면 체크포인터에 저장된 카운트가 덮어씌워진다.
+            # 기존 thread 여부 확인 (question_count 리셋 방지 + 인텐트 재분류 방지)
             config = {"configurable": {"thread_id": str(thread_id)}}
             existing_state = await self.checkpointer.aget(config)
             is_new_thread = existing_state is None
 
-            # 인텐트 분류는 새 대화(첫 메시지)에서만 수행한다.
-            # 기존 thread는 이미 dog_symptom으로 시작된 대화이므로 LangGraph로 바로 보낸다.
-            # ("어제부터", "아니요" 같은 짧은 답변이 general로 오분류되는 문제 방지)
-            if is_new_thread:
-                from app.agents.traffic_agent import classify_intent
-                loop = asyncio.get_event_loop()
-                intent = await loop.run_in_executor(None, classify_intent, user_messages)
-                custom_logger.info(f"인텐트: {intent}")
+            async for event in self.main_chain.astream(
+                message=user_messages,
+                thread_id=str(thread_id),
+                is_new_thread=is_new_thread,
+            ):
+                intent = event.get("intent", "")
+                custom_logger.info(f"인텐트: {intent}, 타입: {event.get('type')}")
 
-                if intent == "general":
-                    async for event in self._run_general_chain(user_messages):
-                        yield event
-                    return
-            else:
-                custom_logger.info("인텐트: dog_symptom (기존 thread 유지)")
+                if event["type"] == "general":
+                    # LangChain general_chain 응답
+                    yield self._done_event(content=event["content"])
 
-            input_state = {"messages": [HumanMessage(content=user_messages)]}
-            if is_new_thread:
-                input_state["question_count"] = 0
-
-            # IMP: LangGraph 에이전트에 사용자의 메시지를 HumanMessage 형태로 전달하고,
-            # thread_id를 통해 대화 문맥(Context)을 유지하며 비동기 스트리밍(astream)으로 실행하는 구현.
-            agent_stream = self.agent.astream(
-                input_state,
-                config=config,
-                stream_mode="updates",
-            )
-
-            agent_iterator = agent_stream.__aiter__()
-            agent_task = asyncio.create_task(agent_iterator.__anext__())
-            progress_task = asyncio.create_task(self.progress_queue.get())
-
-            while True:
-                pending = {agent_task}
-                if progress_task is not None:
-                    pending.add(progress_task)
-
-                done, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-
-                if progress_task in done:
-                    try:
-                        progress_event = progress_task.result()
-                        yield json.dumps(progress_event, ensure_ascii=False)
-                        progress_task = asyncio.create_task(self.progress_queue.get())
-                    except asyncio.CancelledError:
-                        progress_task = None
-                    except Exception as e:
-                        # progress_task에서 예외 발생 시 로그만 남기고 계속 진행
-                        custom_logger.error(f"Error in progress_task: {e}")
-                        progress_task = None
-
-                if agent_task in done:
-                    try:
-                        chunk = agent_task.result()
-                    except StopAsyncIteration:
-                        agent_task = None
-                        break
-                    except Exception as e:
-                        # Task에서 발생한 예외 처리
-                        custom_logger.error(f"Error in agent_task: {e}")
-                        import traceback
-                        custom_logger.error(traceback.format_exc())
-                        agent_task = None
-                        # 에러를 스트리밍으로 전송
-                        error_response = {
-                            "step": "done",
-                            "message_id": str(uuid.uuid4()),
-                            "role": "assistant",
-                            "content": "처리 중 오류가 발생했습니다. 다시 시도해주세요.",
-                            "metadata": {},
-                            "created_at": datetime.utcnow().isoformat(),
-                            "error": str(e)
-                        }
-                        yield json.dumps(error_response, ensure_ascii=False)
-                        break
-
+                elif event["type"] == "langgraph":
+                    # LangGraph 서브모듈 청크 파싱
+                    chunk = event["chunk"]
                     custom_logger.info(f"에이전트 청크: {chunk}")
                     try:
                         for event_str in self._parse_chunk(chunk):
                             yield event_str
                     except Exception as e:
-                        # 청크 처리 중 예외 발생
                         custom_logger.error(f"Error processing chunk: {e}")
                         import traceback
                         custom_logger.error(traceback.format_exc())
-                        error_response = {
-                            "step": "done",
-                            "message_id": str(uuid.uuid4()),
-                            "role": "assistant",
-                            "content": "데이터 처리 중 오류가 발생했습니다.",
-                            "metadata": {},
-                            "created_at": datetime.utcnow().isoformat(),
-                            "error": str(e)
-                        }
-                        yield json.dumps(error_response, ensure_ascii=False)
-                        break
-
-                    agent_task = asyncio.create_task(agent_iterator.__anext__())
-
-            if progress_task is not None:
-                progress_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await progress_task
-
-            while not self.progress_queue.empty():
-                try:
-                    remaining = self.progress_queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
-                yield json.dumps(remaining, ensure_ascii=False)
+                        yield self._done_event(content="데이터 처리 중 오류가 발생했습니다.")
 
         except Exception as e:
             import traceback
-            error_trace = traceback.format_exc()
             custom_logger.error(f"Error in process_query: {e}")
-            custom_logger.error(error_trace)
-            
-            error_content = f"처리 중 오류가 발생했습니다. 다시 시도해주세요."
-            error_metadata = {}
-            
-            # 에러 응답을 스트리밍으로 전송 (HTTPException 대신)
-            error_response = {
+            custom_logger.error(traceback.format_exc())
+            yield json.dumps({
                 "step": "done",
                 "message_id": str(uuid.uuid4()),
                 "role": "assistant",
-                "content": error_content,
-                "metadata": error_metadata,
+                "content": "처리 중 오류가 발생했습니다. 다시 시도해주세요.",
+                "metadata": {},
                 "created_at": datetime.utcnow().isoformat(),
-                "error": str(e) if not isinstance(e, GraphRecursionError) else None
-            }
-            yield json.dumps(error_response, ensure_ascii=False)
+                "error": str(e) if not isinstance(e, GraphRecursionError) else None,
+            }, ensure_ascii=False)
 
     def _done_event(self, content: str, metadata: dict = None, message_id: str = None) -> str:
         return json.dumps({
@@ -246,7 +149,7 @@ class AgentService:
         }, ensure_ascii=False)
 
     def _parse_chunk(self, chunk: dict) -> list[str]:
-        """StateGraph 스트림 청크를 SSE 이벤트 문자열 리스트로 변환한다."""
+        """LangGraph StateGraph 스트림 청크를 SSE 이벤트 문자열 리스트로 변환한다."""
         events: list[str] = []
         for step, event in chunk.items():
             if not event:
@@ -254,9 +157,8 @@ class AgentService:
             messages = event.get("messages", []) if isinstance(event, dict) else []
             if not messages:
                 continue
-            message = messages[-1]  # 노드의 마지막 메시지 사용
+            message = messages[-1]
 
-            # 기존 create_agent 호환: model 노드의 ChatResponse tool call
             if step == "model":
                 tool_calls = getattr(message, "tool_calls", [])
                 if tool_calls:
@@ -274,17 +176,14 @@ class AgentService:
                             "tool_calls": [tc["name"] for tc in tool_calls],
                         }))
 
-            # StateGraph: tools 노드
             elif step == "tools":
                 events.append(
                     f'{{"step": "tools", "name": {json.dumps(message.name)}, "content": {message.content}}}'
                 )
 
-            # StateGraph: ask_follow_up 노드 — 중간 질문 반환
             elif step == "ask_follow_up":
                 events.append(self._done_event(content=message.content))
 
-            # StateGraph: generate_report 노드 — 최종 리포트 반환
             elif step == "generate_report":
                 import json as _json
                 try:
