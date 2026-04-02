@@ -16,3 +16,8 @@ def test_dog_symptom_prompt_keywords():
     assert "search_symptoms" in DOG_SYMPTOM_SYSTEM_PROMPT
     assert "get_pet_breed_info" in DOG_SYMPTOM_SYSTEM_PROMPT
     assert "find_nearby_vet" in DOG_SYMPTOM_SYSTEM_PROMPT
+
+
+def test_create_dog_agent_importable():
+    from app.agents.dog_agent import create_dog_agent
+    assert callable(create_dog_agent)
