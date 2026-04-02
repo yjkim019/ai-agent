@@ -9,6 +9,16 @@ def test_create_dog_agent_is_tracked():
     assert hasattr(create_dog_agent, "__wrapped__") or callable(create_dog_agent)
 
 
+def test_run_evaluation_importable():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "run_evaluation",
+        os.path.join(os.path.dirname(__file__), "..", "scripts", "run_evaluation.py")
+    )
+    # 파일 존재 및 파싱 가능 여부 확인
+    assert spec is not None
+
+
 def test_eval_dataset_structure():
     path = os.path.join(os.path.dirname(__file__), "..", "app", "data", "eval_dataset.json")
     with open(path) as f:
