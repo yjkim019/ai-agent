@@ -6,6 +6,7 @@ from typing import TypedDict
 from elasticsearch import Elasticsearch
 from langchain.tools import tool
 from langgraph.graph import StateGraph, END
+from opik import track
 
 from app.agents.tools._es_common import BM25_INDEX_NAME, INDEX_NAME, CONTENT_FIELD
 
@@ -29,6 +30,7 @@ def _get_es_client() -> Elasticsearch:
     )
 
 
+@track(name="get_query_vector")
 def _get_query_vector(query: str) -> list[float] | None:
     """OpenAI 임베딩으로 쿼리 벡터를 생성합니다."""
     try:
@@ -41,6 +43,61 @@ def _get_query_vector(query: str) -> list[float] | None:
 
 
 # ---------------------------------------------------------------------------
+# 검색 단계별 함수 (Opik 트레이스용)
+# ---------------------------------------------------------------------------
+
+
+@track(name="bm25_search")
+def _bm25_search(es: Elasticsearch, query: str) -> dict[str, dict]:
+    """BM25 키워드 검색 결과를 {doc_id: {hit, ranks}} 형태로 반환합니다."""
+    resp = es.search(
+        index=BM25_INDEX_NAME,
+        body={
+            "query": {"match": {CONTENT_FIELD: {"query": query, "operator": "or"}}},
+            "size": _TOP_K * 2,
+        },
+    )
+    hits_map: dict[str, dict] = {}
+    for rank, hit in enumerate(resp["hits"]["hits"], 1):
+        doc_id = hit["_id"]
+        hits_map[doc_id] = {"hit": hit, "ranks": [rank]}
+    return hits_map
+
+
+@track(name="knn_search")
+def _knn_search(es: Elasticsearch, query_vector: list[float]) -> dict[str, dict]:
+    """kNN 벡터 검색 결과를 {doc_id: {hit, ranks}} 형태로 반환합니다."""
+    resp = es.search(
+        index=INDEX_NAME,
+        body={
+            "knn": {
+                "field": "content_vector",
+                "query_vector": query_vector,
+                "k": _TOP_K * 2,
+                "num_candidates": 100,
+            },
+            "size": _TOP_K * 2,
+        },
+    )
+    hits_map: dict[str, dict] = {}
+    for rank, hit in enumerate(resp["hits"]["hits"], 1):
+        hits_map[hit["_id"]] = {"hit": hit, "ranks": [rank]}
+    return hits_map
+
+
+@track(name="rrf_rerank")
+def _rrf_rerank(hits_map: dict[str, dict], top_k: int = _TOP_K) -> list[dict]:
+    """RRF(Reciprocal Rank Fusion)로 BM25+kNN 결과를 재정렬합니다."""
+    _RRF_K = 60
+
+    def _score(ranks: list[int]) -> float:
+        return sum(1.0 / (_RRF_K + r) for r in ranks)
+
+    scored = sorted(hits_map.values(), key=lambda v: _score(v["ranks"]), reverse=True)
+    return [v["hit"] for v in scored[:top_k]]
+
+
+# ---------------------------------------------------------------------------
 # LangGraph 검색 StateGraph
 # ---------------------------------------------------------------------------
 
@@ -50,66 +107,31 @@ class _SearchState(TypedDict):
     result: str
 
 
-_RRF_K = 60  # RRF 상수 (일반적으로 60 사용)
-
-
-def _rrf_score(ranks: list[int]) -> float:
-    """Reciprocal Rank Fusion 점수 계산."""
-    return sum(1.0 / (_RRF_K + r) for r in ranks)
-
-
 def _search_node(state: _SearchState) -> _SearchState:
     """BM25 + kNN 하이브리드 검색 + RRF 재정렬."""
     query = state["query"]
     try:
         es = _get_es_client()
-        # doc_id → {"hit": hit, "ranks": [rank_from_bm25, rank_from_knn]}
-        hits_map: dict[str, dict] = {}
 
         # 1) BM25 검색
-        bm25_resp = es.search(
-            index=BM25_INDEX_NAME,
-            body={
-                "query": {"match": {CONTENT_FIELD: {"query": query, "operator": "or"}}},
-                "size": _TOP_K * 2,
-            },
-        )
-        for rank, hit in enumerate(bm25_resp["hits"]["hits"], 1):
-            doc_id = hit["_id"]
-            hits_map[doc_id] = {"hit": hit, "ranks": [rank]}
+        hits_map = _bm25_search(es, query)
 
-        # 2) kNN 벡터 검색
+        # 2) kNN 벡터 검색 후 병합
         query_vector = _get_query_vector(query)
         if query_vector:
-            knn_resp = es.search(
-                index=INDEX_NAME,
-                body={
-                    "knn": {
-                        "field": "content_vector",
-                        "query_vector": query_vector,
-                        "k": _TOP_K * 2,
-                        "num_candidates": 100,
-                    },
-                    "size": _TOP_K * 2,
-                },
-            )
-            for rank, hit in enumerate(knn_resp["hits"]["hits"], 1):
-                doc_id = hit["_id"]
+            knn_hits = _knn_search(es, query_vector)
+            for doc_id, entry in knn_hits.items():
                 if doc_id in hits_map:
-                    hits_map[doc_id]["ranks"].append(rank)
+                    hits_map[doc_id]["ranks"].extend(entry["ranks"])
                 else:
-                    hits_map[doc_id] = {"hit": hit, "ranks": [rank]}
+                    hits_map[doc_id] = entry
 
         if not hits_map:
             return {"query": query, "result": f"'{query}'에 대한 관련 정보를 찾을 수 없습니다."}
 
-        # 3) RRF 점수로 재정렬
-        scored = sorted(
-            hits_map.values(),
-            key=lambda v: _rrf_score(v["ranks"]),
-            reverse=True,
-        )[:_TOP_K]
-        hits = [v["hit"] for v in scored]
+        # 3) RRF 재정렬
+        hits = _rrf_rerank(hits_map)
+
         results: list[str] = []
         for i, hit in enumerate(hits, 1):
             source = hit.get("_source", {})
