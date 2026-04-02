@@ -1,6 +1,21 @@
 """3주차: LangGraph StateGraph + PDF RAG 테스트"""
 
 
+def test_parse_chunk_handles_generate_report_node():
+    from app.services.agent_service import AgentService
+    from langchain_core.messages import AIMessage
+
+    service = AgentService.__new__(AgentService)
+    chunk = {
+        "generate_report": {
+            "messages": [AIMessage(content="**긴급도**: 가정 관찰 가능")]
+        }
+    }
+    events = service._parse_chunk(chunk)
+    assert len(events) >= 1
+    assert "긴급도" in events[0]
+
+
 def test_dog_agent_uses_state_graph():
     from app.agents.symptom_pipeline import build_symptom_graph
     graph = build_symptom_graph()

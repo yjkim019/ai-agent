@@ -148,28 +148,8 @@ class AgentService:
 
                     custom_logger.info(f"에이전트 청크: {chunk}")
                     try:
-                        for step, event in chunk.items():
-                            if not event or not (step in ["model", "tools"]):
-                                continue
-                            messages = event.get("messages", [])
-                            if len(messages) == 0:
-                                continue
-                            message = messages[0]
-                            if step == "model":
-                                tool_calls = message.tool_calls
-                                if not tool_calls:
-                                    continue
-                                tool = tool_calls[0]
-                                if tool.get("name") == "ChatResponse":
-                                    args = tool.get("args", {})
-                                    metadata = args.get("metadata")
-                                    custom_logger.info("========================================")
-                                    custom_logger.info(args)
-                                    yield f'{{"step": "done", "message_id": {json.dumps(args.get("message_id"))}, "role": "assistant", "content": {json.dumps(args.get("content"), ensure_ascii=False)}, "metadata": {json.dumps(self._handle_metadata(metadata), ensure_ascii=False)}, "created_at": "{datetime.utcnow().isoformat()}"}}'
-                                else:
-                                    yield f'{{"step": "model", "tool_calls": {json.dumps([tool["name"] for tool in tool_calls])}}}'
-                            if step == "tools":
-                                yield f'{{"step": "tools", "name": {json.dumps(message.name)}, "content": {message.content}}}'
+                        for event_str in self._parse_chunk(chunk):
+                            yield event_str
                     except Exception as e:
                         # 청크 처리 중 예외 발생
                         custom_logger.error(f"Error processing chunk: {e}")
@@ -221,6 +201,61 @@ class AgentService:
                 "error": str(e) if not isinstance(e, GraphRecursionError) else None
             }
             yield json.dumps(error_response, ensure_ascii=False)
+
+    def _done_event(self, content: str, metadata: dict = None, message_id: str = None) -> str:
+        return json.dumps({
+            "step": "done",
+            "message_id": message_id or str(uuid.uuid4()),
+            "role": "assistant",
+            "content": content,
+            "metadata": metadata or {},
+            "created_at": datetime.utcnow().isoformat(),
+        }, ensure_ascii=False)
+
+    def _parse_chunk(self, chunk: dict) -> list[str]:
+        """StateGraph 스트림 청크를 SSE 이벤트 문자열 리스트로 변환한다."""
+        events: list[str] = []
+        for step, event in chunk.items():
+            if not event:
+                continue
+            messages = event.get("messages", []) if isinstance(event, dict) else []
+            if not messages:
+                continue
+            message = messages[-1]  # 노드의 마지막 메시지 사용
+
+            # 기존 create_agent 호환: model 노드의 ChatResponse tool call
+            if step == "model":
+                tool_calls = getattr(message, "tool_calls", [])
+                if tool_calls:
+                    first_tool = tool_calls[0]
+                    if first_tool.get("name") == "ChatResponse":
+                        args = first_tool.get("args", {})
+                        events.append(self._done_event(
+                            content=args.get("content", ""),
+                            metadata=self._handle_metadata(args.get("metadata")),
+                            message_id=args.get("message_id"),
+                        ))
+                    else:
+                        events.append(json.dumps({
+                            "step": "model",
+                            "tool_calls": [tc["name"] for tc in tool_calls],
+                        }))
+
+            # StateGraph: tools 노드
+            elif step == "tools":
+                events.append(
+                    f'{{"step": "tools", "name": {json.dumps(message.name)}, "content": {message.content}}}'
+                )
+
+            # StateGraph: ask_follow_up 노드 — 중간 질문 반환
+            elif step == "ask_follow_up":
+                events.append(self._done_event(content=message.content))
+
+            # StateGraph: generate_report 노드 — 최종 리포트 반환
+            elif step == "generate_report":
+                events.append(self._done_event(content=message.content))
+
+        return events
 
     @log_execution
     def _handle_metadata(self, metadata) -> dict:
