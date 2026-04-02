@@ -97,23 +97,27 @@ class AgentService:
 
             custom_logger.info(f"사용자 메시지: {user_messages}")
 
-            # 인텐트 분류 — general이면 LangChain으로 바로 응답
-            from app.agents.traffic_agent import classify_intent
-            loop = asyncio.get_event_loop()
-            intent = await loop.run_in_executor(None, classify_intent, user_messages)
-            custom_logger.info(f"인텐트: {intent}")
-
-            if intent == "general":
-                async for event in self._run_general_chain(user_messages):
-                    yield event
-                return
-
-            # dog_symptom → LangGraph StateGraph
             # 체크포인터에 기존 상태가 있으면 새 대화가 아니므로 question_count를 넘기지 않는다.
             # question_count를 항상 0으로 초기화하면 체크포인터에 저장된 카운트가 덮어씌워진다.
             config = {"configurable": {"thread_id": str(thread_id)}}
             existing_state = await self.checkpointer.aget(config)
             is_new_thread = existing_state is None
+
+            # 인텐트 분류는 새 대화(첫 메시지)에서만 수행한다.
+            # 기존 thread는 이미 dog_symptom으로 시작된 대화이므로 LangGraph로 바로 보낸다.
+            # ("어제부터", "아니요" 같은 짧은 답변이 general로 오분류되는 문제 방지)
+            if is_new_thread:
+                from app.agents.traffic_agent import classify_intent
+                loop = asyncio.get_event_loop()
+                intent = await loop.run_in_executor(None, classify_intent, user_messages)
+                custom_logger.info(f"인텐트: {intent}")
+
+                if intent == "general":
+                    async for event in self._run_general_chain(user_messages):
+                        yield event
+                    return
+            else:
+                custom_logger.info("인텐트: dog_symptom (기존 thread 유지)")
 
             input_state = {"messages": [HumanMessage(content=user_messages)]}
             if is_new_thread:
