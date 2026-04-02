@@ -162,6 +162,9 @@ cython_debug/
 # Brain / Artifacts
 .gemini/
 
-# SQLite runtime files
-checkpoints.db-shm
-checkpoints.db-wal
+# 데이터 파이프라인 산출물
+data/pdfs/
+data/chunks/
+
+# Git worktrees
+.worktrees/
