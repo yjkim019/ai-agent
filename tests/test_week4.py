@@ -1,6 +1,8 @@
 """Week 4: VFS 서비스 및 멀티 서브에이전트 테스트"""
+import asyncio
 import pytest
 from app.services.vfs_service import VFSService
+from app.agents.parallel_agents import urgency_judge, run_parallel_analysis
 
 
 def test_vfs_write_and_read(tmp_path):
@@ -36,3 +38,27 @@ def test_vfs_list_files(tmp_path):
     files = vfs.list_files()
     assert "symptom_result.json" in files
     assert "breed_result.json" in files
+
+
+# ---------------------------------------------------------------------------
+# 병렬 서브에이전트 테스트
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_urgency_judge_emergency_keyword():
+    """경련 키워드가 포함되면 high 긴급도를 반환해야 한다 (규칙 기반)."""
+    result = await urgency_judge("강아지가 갑자기 경련을 일으키고 있어요")
+    assert result["type"] == "urgency"
+    assert result["urgency"] == "high"
+    assert result["method"] == "rule"
+
+
+@pytest.mark.asyncio
+async def test_run_parallel_analysis_structure():
+    """run_parallel_analysis 결과에 urgency, symptom_search 키가 있어야 한다."""
+    result = await run_parallel_analysis("강아지가 구토를 했어요", breed=None)
+    assert "urgency" in result
+    assert result["urgency"] in ("high", "medium", "low", "observe")
+    # symptom_search는 ES 연결 실패 시 에러 문자열도 허용
+    assert "symptom_search" in result
