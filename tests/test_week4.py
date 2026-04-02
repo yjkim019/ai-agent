@@ -2,6 +2,7 @@
 import asyncio
 import pytest
 from app.services.vfs_service import VFSService
+from app.services.pet_memory_service import PetMemoryService
 from app.agents.parallel_agents import urgency_judge, run_parallel_analysis
 
 
@@ -62,3 +63,46 @@ async def test_run_parallel_analysis_structure():
     assert result["urgency"] in ("high", "medium", "low", "observe")
     # symptom_search는 ES 연결 실패 시 에러 문자열도 허용
     assert "symptom_search" in result
+
+
+# ---------------------------------------------------------------------------
+# 반려견 프로필 메모리 테스트
+# ---------------------------------------------------------------------------
+
+
+def test_pet_memory_save_and_get(tmp_path):
+    """save_profile 후 get_profile로 동일 데이터를 반환해야 한다."""
+    svc = PetMemoryService(db_path=str(tmp_path / "pet.db"))
+    svc.save_profile("thread-1", breed="말티즈", age="3살")
+    profile = svc.get_profile("thread-1")
+    assert profile is not None
+    assert profile["breed"] == "말티즈"
+    assert profile["age"] == "3살"
+
+
+def test_pet_memory_partial_update(tmp_path):
+    """None 값은 기존 값을 유지해야 한다."""
+    svc = PetMemoryService(db_path=str(tmp_path / "pet.db"))
+    svc.save_profile("thread-1", breed="푸들", age="2살")
+    svc.save_profile("thread-1", weight="3kg")  # breed/age는 None
+    profile = svc.get_profile("thread-1")
+    assert profile["breed"] == "푸들"
+    assert profile["age"] == "2살"
+    assert profile["weight"] == "3kg"
+
+
+def test_pet_memory_diagnosis_history(tmp_path):
+    """add_diagnosis 호출 후 history에 항목이 추가되어야 한다."""
+    svc = PetMemoryService(db_path=str(tmp_path / "pet.db"))
+    svc.save_profile("thread-1", breed="진도개")
+    svc.add_diagnosis("thread-1", "구토 - 중등도")
+    svc.add_diagnosis("thread-1", "식욕부진 - 경증")
+    profile = svc.get_profile("thread-1")
+    assert "구토 - 중등도" in profile["history"]
+    assert "식욕부진 - 경증" in profile["history"]
+
+
+def test_pet_memory_missing_returns_none(tmp_path):
+    """존재하지 않는 thread_id는 None을 반환해야 한다."""
+    svc = PetMemoryService(db_path=str(tmp_path / "pet.db"))
+    assert svc.get_profile("nonexistent") is None
