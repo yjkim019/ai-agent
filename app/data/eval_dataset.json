@@ -1,0 +1,62 @@
+[
+  {
+    "input": "강아지가 갑자기 쓰러지고 경련을 해요",
+    "expected_urgency": "high",
+    "expected_tools": ["search_symptoms"],
+    "context": "응급 증상 — 즉시 병원 필요"
+  },
+  {
+    "input": "말티즈가 3일 전부터 밥을 잘 안 먹어요",
+    "expected_urgency": "low",
+    "expected_tools": ["search_symptoms", "get_pet_breed_info"],
+    "context": "품종 특성(저혈당 취약) + 식욕부진"
+  },
+  {
+    "input": "강아지가 어제부터 구토를 5번 했어요. 물도 안 마셔요",
+    "expected_urgency": "medium",
+    "expected_tools": ["search_symptoms"],
+    "context": "구토 반복 + 탈수 우려"
+  },
+  {
+    "input": "포메라니안이 기침을 자주 해요",
+    "expected_urgency": "medium",
+    "expected_tools": ["search_symptoms", "get_pet_breed_info"],
+    "context": "소형견 기관허탈 가능성"
+  },
+  {
+    "input": "강아지 뒷다리를 가끔 들어요",
+    "expected_urgency": "low",
+    "expected_tools": ["search_symptoms"],
+    "context": "슬개골 탈구 초기 증상"
+  },
+  {
+    "input": "강아지가 숨을 가쁘게 쉬고 잇몸이 하얘요",
+    "expected_urgency": "high",
+    "expected_tools": ["search_symptoms"],
+    "context": "호흡 곤란 응급"
+  },
+  {
+    "input": "골든리트리버가 물을 엄청 많이 마셔요",
+    "expected_urgency": "medium",
+    "expected_tools": ["search_symptoms", "get_pet_breed_info"],
+    "context": "다음다갈증 — 당뇨 등 의심"
+  },
+  {
+    "input": "강아지 뒷다리가 절뚝거려요. 강남구에 동물병원 있나요?",
+    "expected_urgency": "medium",
+    "expected_tools": ["search_symptoms", "find_nearby_vet"],
+    "context": "증상 + 병원 위치 복합 요청"
+  },
+  {
+    "input": "강아지가 온몸을 계속 긁어요",
+    "expected_urgency": "low",
+    "expected_tools": ["search_symptoms"],
+    "context": "피부 알레르기·기생충"
+  },
+  {
+    "input": "노령견(13살)이 밥도 안 먹고 무기력해요",
+    "expected_urgency": "medium",
+    "expected_tools": ["search_symptoms"],
+    "context": "노령견 복합 증상 — 신장 등 의심"
+  }
+]
