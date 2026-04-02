@@ -8,6 +8,8 @@ from langchain.agents.structured_output import ToolStrategy
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
+from opik import track
+
 from app.agents.search_agent import search_symptoms
 from app.agents.tools import get_pet_breed_info, find_nearby_vet
 from app.agents.prompts import DOG_SYMPTOM_SYSTEM_PROMPT
@@ -21,6 +23,7 @@ class ChatResponse:
     metadata: dict[str, object]
 
 
+@track(name="create_dog_agent")
 def create_dog_agent(model: ChatOpenAI, checkpointer: BaseCheckpointSaver[Any] = None):
     """강아지 증상 분석 에이전트를 생성합니다."""
     if checkpointer is None:
