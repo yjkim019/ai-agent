@@ -312,3 +312,101 @@ def find_nearby_hospitals(location: str, specialty: str = "일반") -> str:
         lines.append("")
 
     return "\n".join(lines).strip()
+
+
+@tool
+@track(name="get_pet_breed_info")
+def get_pet_breed_info(breed_name: str) -> str:
+    """품종명(반드시 한글)을 받아 해당 품종의 취약 질환 및 특이사항을 반환합니다.
+    예: '말티즈', '푸들', '골든리트리버', '시바이누'"""
+    breed_info: dict[str, str] = {
+        "말티즈": "슬개골 탈구, 기관허탈, 치아 질환, 백내장에 취약합니다. 소형견이므로 저혈당에도 주의가 필요합니다.",
+        "푸들": "슬개골 탈구, 고관절 이형성증, 진행성 망막위축증(PRA), 아디슨병에 취약합니다.",
+        "포메라니안": "기관허탈, 슬개골 탈구, 탈모증후군(블랙스킨 디지즈)에 취약합니다.",
+        "치와와": "기관허탈, 슬개골 탈구, 수두증(물뇌증), 심장 질환에 취약합니다.",
+        "비숑프리제": "슬개골 탈구, 알레르기성 피부염, 백내장에 취약합니다.",
+        "시바이누": "슬개골 탈구, 알레르기, 녹내장, 고관절 이형성증에 취약합니다.",
+        "골든리트리버": "고관절 이형성증, 팔꿈치 이형성증, 림프종, 피부 종양에 취약합니다.",
+        "래브라도리트리버": "고관절 이형성증, 비만, 외이염, 피부 알레르기에 취약합니다.",
+        "진도개": "갑상선 기능 저하증, 고관절 이형성증, 피부 질환에 취약합니다.",
+        "보더콜리": "고관절 이형성증, 눈 질환(Collie Eye Anomaly), MDR1 유전자 돌연변이에 취약합니다.",
+        "닥스훈트": "추간판 탈출증(허리 디스크), 비만, 당뇨병에 특히 취약합니다.",
+        "불독": "호흡기 문제(단두종 기도 증후군), 피부 주름 감염, 고관절 이형성증에 취약합니다.",
+        "프렌치불독": "단두종 기도 증후군, 척추 기형(나비 척추), 알레르기 피부염에 취약합니다.",
+        "요크셔테리어": "기관허탈, 슬개골 탈구, 치아 질환, 저혈당에 취약합니다.",
+        "시츄": "안구 돌출, 피부 알레르기, 귀 감염, 슬개골 탈구에 취약합니다.",
+        "웰시코기": "고관절 이형성증, 추간판 탈출증, 비만, 눈 질환에 취약합니다.",
+    }
+    info = breed_info.get(breed_name)
+    if info:
+        return f"[{breed_name}] {info}"
+    return f"'{breed_name}' 품종에 대한 취약 질환 정보가 데이터베이스에 없습니다. 수의사에게 문의하세요."
+
+
+@tool
+@track(name="find_nearby_vet")
+def find_nearby_vet(location: str) -> str:
+    """지역명을 받아 주변 동물병원 목록을 조회합니다.
+    location: 시도명 (예: '서울', '부산', '경기') 또는 동물병원명 일부"""
+    import xml.etree.ElementTree as ET
+
+    sido_cd = None
+    yadm_nm = None
+    for key, code in _SIDO_CODE.items():
+        if key in location:
+            sido_cd = code
+            break
+    if sido_cd is None:
+        yadm_nm = location
+
+    params: dict[str, Any] = {
+        "serviceKey": _HOSP_API_KEY,
+        "pageNo": "1",
+        "numOfRows": "5",
+        "clCd": "92",
+    }
+    if sido_cd:
+        params["sidoCd"] = sido_cd
+    if yadm_nm:
+        params["yadmNm"] = yadm_nm
+
+    try:
+        resp = httpx.get(_HOSP_API_URL, params=params, timeout=15)
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        return f"동물병원 정보 API 호출 실패 (HTTP {e.response.status_code}): {e.response.text[:200]}"
+    except httpx.RequestError as e:
+        return f"동물병원 정보 API 네트워크 오류: {e}"
+
+    try:
+        root = ET.fromstring(resp.content)
+    except ET.ParseError as e:
+        return f"동물병원 정보 응답 파싱 오류: {e}"
+
+    result_code = root.findtext(".//resultCode", "")
+    if result_code != "00":
+        result_msg = root.findtext(".//resultMsg", "")
+        return f"동물병원 정보 API 오류 ({result_code}): {result_msg}"
+
+    items = root.findall(".//item")
+    total = root.findtext(".//totalCount", "0")
+
+    if not items:
+        return f"'{location}' 지역의 동물병원 정보를 찾을 수 없습니다."
+
+    lines: list[str] = [
+        f"■ '{location}' 동물병원 목록 (전체 {total}건 중 상위 {len(items)}건)",
+        "",
+    ]
+    for i, item in enumerate(items, 1):
+        name = item.findtext("yadmNm", "")
+        cl_name = item.findtext("clCdNm", "")
+        addr = item.findtext("addr", "")
+        tel = item.findtext("telno", "")
+        lines.append(f"{i}. {name} [{cl_name}]")
+        lines.append(f"   주소: {addr}")
+        if tel:
+            lines.append(f"   전화: {tel}")
+        lines.append("")
+
+    return "\n".join(lines).strip()
