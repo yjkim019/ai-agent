@@ -78,10 +78,17 @@ class AgentService:
             from opik.integrations.langchain import track_langgraph
             self.agent = track_langgraph(self.agent, self.opik_tracer)
         
+    async def _run_general_chain(self, user_messages: str):
+        """인텐트가 general일 때 LangChain으로 직접 응답하는 async generator."""
+        from app.agents.traffic_agent import run_general_chain
+        loop = asyncio.get_event_loop()
+        content = await loop.run_in_executor(None, run_general_chain, user_messages)
+        yield self._done_event(content=content)
+
     # 실제 대화 로직
     @log_execution
     async def process_query(self, user_messages: str, thread_id: uuid.UUID):
-        """LangChain Messages 형식의 쿼리를 처리하고 AIMessage 형식으로 반환합니다."""
+        """인텐트 분류 후 LangGraph(dog_symptom) 또는 LangChain(general)으로 분기합니다."""
         try:
             # checkpointer 초기화 (SQLite 연결, 첫 호출 시만 실행)
             await self._init_checkpointer()
@@ -90,6 +97,18 @@ class AgentService:
 
             custom_logger.info(f"사용자 메시지: {user_messages}")
 
+            # 인텐트 분류 — general이면 LangChain으로 바로 응답
+            from app.agents.traffic_agent import classify_intent
+            loop = asyncio.get_event_loop()
+            intent = await loop.run_in_executor(None, classify_intent, user_messages)
+            custom_logger.info(f"인텐트: {intent}")
+
+            if intent == "general":
+                async for event in self._run_general_chain(user_messages):
+                    yield event
+                return
+
+            # dog_symptom → LangGraph StateGraph
             # 체크포인터에 기존 상태가 있으면 새 대화가 아니므로 question_count를 넘기지 않는다.
             # question_count를 항상 0으로 초기화하면 체크포인터에 저장된 카운트가 덮어씌워진다.
             config = {"configurable": {"thread_id": str(thread_id)}}
