@@ -1,6 +1,16 @@
 """3주차: LangGraph StateGraph + PDF RAG 테스트"""
 
 
+def test_dog_agent_uses_state_graph():
+    from app.agents.symptom_pipeline import build_symptom_graph
+    graph = build_symptom_graph()
+    nodes = list(graph.get_graph().nodes.keys())
+    assert "collect_symptoms" in nodes
+    assert "ask_follow_up" in nodes
+    assert "search_rag" in nodes
+    assert "generate_report" in nodes
+
+
 def test_symptom_pipeline_graph_importable():
     from app.agents.symptom_pipeline import build_symptom_graph
     graph = build_symptom_graph()
