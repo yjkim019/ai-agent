@@ -21,3 +21,8 @@ def test_dog_symptom_prompt_keywords():
 def test_create_dog_agent_importable():
     from app.agents.dog_agent import create_dog_agent
     assert callable(create_dog_agent)
+
+
+def test_main_app_title_contains_dog():
+    from app.main import app
+    assert "강아지" in app.title

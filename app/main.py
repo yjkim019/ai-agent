@@ -7,9 +7,9 @@ from app.api.routes.chat import chat_router
 from app.utils.logger import custom_logger
 
 app = FastAPI(
-    title="Edu Agent Template",
-    description="LangChain 기반 에이전트 교육용 템플릿",
-    version="0.1.0",
+    title="강아지 증상 분석 AI 챗봇",
+    description="강아지 증상을 입력하면 긴급도·의심 질환·대처법을 알려주는 AI 어시스턴트",
+    version="1.0.0",
 )
 
 api_router = APIRouter(prefix=settings.API_V1_PREFIX)

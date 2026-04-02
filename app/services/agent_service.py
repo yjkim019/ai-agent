@@ -48,7 +48,7 @@ class AgentService:
             from opik.integrations.langchain import OpikTracer
 
             self.opik_tracer = OpikTracer(
-                tags=["medical-agent"],
+                tags=["dog-symptom-agent"],
                 metadata={"model": settings.OPENAI_MODEL}
             )
 
@@ -67,17 +67,15 @@ class AgentService:
         self.checkpointer = AsyncSqliteSaver(conn)
 
     def _create_agent(self, thread_id: uuid.UUID = None):
-        """LangChain 의료 에이전트 생성"""
-        from app.agents.medical_agent import create_medical_agent
-        assert self.checkpointer is not None, "checkpointer가 초기화되지 않았습니다. _init_checkpointer를 먼저 호출하세요."
-        self.agent = create_medical_agent(
+        """강아지 증상 분석 에이전트 생성"""
+        from app.agents.dog_agent import create_dog_agent
+        assert self.checkpointer is not None, "checkpointer가 초기화되지 않았습니다."
+        self.agent = create_dog_agent(
             model=self.model,
             checkpointer=self.checkpointer,
         )
-
         if self.opik_tracer is not None:
             from opik.integrations.langchain import track_langgraph
-
             self.agent = track_langgraph(self.agent, self.opik_tracer)
         
     # 실제 대화 로직
