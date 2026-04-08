@@ -2,7 +2,7 @@
 # Note: app.agents.tools package takes precedence over app.agents.tools module (tools.py)
 # so we explicitly re-export the tools needed by agents.
 
-import importlib
+import importlib.util
 import sys
 import os
 

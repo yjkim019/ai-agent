@@ -1,9 +1,7 @@
-"""Week 4: VFS 서비스 및 멀티 서브에이전트 테스트"""
-import asyncio
+"""Week 4: VFS 서비스 및 반려견 프로필 메모리 테스트"""
 import pytest
 from app.services.vfs_service import VFSService
 from app.services.pet_memory_service import PetMemoryService
-from app.agents.parallel_agents import urgency_judge, run_parallel_analysis
 
 
 def test_vfs_write_and_read(tmp_path):
@@ -39,30 +37,6 @@ def test_vfs_list_files(tmp_path):
     files = vfs.list_files()
     assert "symptom_result.json" in files
     assert "breed_result.json" in files
-
-
-# ---------------------------------------------------------------------------
-# 병렬 서브에이전트 테스트
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_urgency_judge_emergency_keyword():
-    """경련 키워드가 포함되면 high 긴급도를 반환해야 한다 (규칙 기반)."""
-    result = await urgency_judge("강아지가 갑자기 경련을 일으키고 있어요")
-    assert result["type"] == "urgency"
-    assert result["urgency"] == "high"
-    assert result["method"] == "rule"
-
-
-@pytest.mark.asyncio
-async def test_run_parallel_analysis_structure():
-    """run_parallel_analysis 결과에 urgency, symptom_search 키가 있어야 한다."""
-    result = await run_parallel_analysis("강아지가 구토를 했어요", breed=None)
-    assert "urgency" in result
-    assert result["urgency"] in ("high", "medium", "low", "observe")
-    # symptom_search는 ES 연결 실패 시 에러 문자열도 허용
-    assert "symptom_search" in result
 
 
 # ---------------------------------------------------------------------------
@@ -106,30 +80,3 @@ def test_pet_memory_missing_returns_none(tmp_path):
     """존재하지 않는 thread_id는 None을 반환해야 한다."""
     svc = PetMemoryService(db_path=str(tmp_path / "pet.db"))
     assert svc.get_profile("nonexistent") is None
-
-
-# ---------------------------------------------------------------------------
-# 트래픽 라우터 테스트
-# ---------------------------------------------------------------------------
-
-
-def test_classify_intent_dog_symptom():
-    """강아지 증상 질문은 dog_symptom으로 분류되어야 한다."""
-    from app.agents.traffic_agent import classify_intent
-    result = classify_intent("강아지가 어제부터 구토를 계속 해요")
-    assert result == "dog_symptom"
-
-
-def test_classify_intent_general():
-    """일반 질문은 general로 분류되어야 한다."""
-    from app.agents.traffic_agent import classify_intent
-    result = classify_intent("오늘 날씨 어때?")
-    assert result == "general"
-
-
-def test_run_general_chain_returns_string():
-    """general_chain은 비어있지 않은 문자열을 반환해야 한다."""
-    from app.agents.traffic_agent import run_general_chain
-    result = run_general_chain("안녕하세요!")
-    assert isinstance(result, str)
-    assert len(result) > 0

@@ -1,11 +1,12 @@
-"""강아지 증상 검색 에이전트 (BM25 + kNN 하이브리드)"""
+"""강아지 증상 검색 에이전트 (BM25 + kNN 병렬 하이브리드 + RRF)"""
 from __future__ import annotations
 
+import re
 from typing import TypedDict
 
 from elasticsearch import Elasticsearch
 from langchain.tools import tool
-from langgraph.graph import StateGraph, END
+from langgraph.graph import StateGraph, END, START
 from opik import track
 
 from app.agents.tools._es_common import BM25_INDEX_NAME, INDEX_NAME, CONTENT_FIELD
@@ -98,61 +99,93 @@ def _rrf_rerank(hits_map: dict[str, dict], top_k: int = _TOP_K) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# LangGraph 검색 StateGraph
+# LangGraph 검색 StateGraph (병렬 fan-out)
 # ---------------------------------------------------------------------------
 
 
 class _SearchState(TypedDict):
     query: str
+    query_vector: list[float] | None
+    bm25_hits: dict[str, dict]
+    knn_hits: dict[str, dict]
     result: str
 
 
-def _search_node(state: _SearchState) -> _SearchState:
-    """BM25 + kNN 하이브리드 검색 + RRF 재정렬."""
-    query = state["query"]
+def _bm25_node(state: _SearchState) -> dict:
+    """BM25 키워드 검색 노드."""
     try:
         es = _get_es_client()
+        return {"bm25_hits": _bm25_search(es, state["query"])}
+    except Exception:
+        return {"bm25_hits": {}}
 
-        # 1) BM25 검색
-        hits_map = _bm25_search(es, query)
 
-        # 2) kNN 벡터 검색 후 병합
-        query_vector = _get_query_vector(query)
-        if query_vector:
-            knn_hits = _knn_search(es, query_vector)
-            for doc_id, entry in knn_hits.items():
-                if doc_id in hits_map:
-                    hits_map[doc_id]["ranks"].extend(entry["ranks"])
-                else:
-                    hits_map[doc_id] = entry
+def _knn_node(state: _SearchState) -> dict:
+    """kNN 벡터 검색 노드."""
+    query_vector = state.get("query_vector")
+    if not query_vector:
+        return {"knn_hits": {}}
+    try:
+        es = _get_es_client()
+        return {"knn_hits": _knn_search(es, query_vector)}
+    except Exception:
+        return {"knn_hits": {}}
 
-        if not hits_map:
-            return {"query": query, "result": f"'{query}'에 대한 관련 정보를 찾을 수 없습니다."}
 
-        # 3) RRF 재정렬
-        hits = _rrf_rerank(hits_map)
+def _rerank_node(state: _SearchState) -> dict:
+    """BM25 + kNN 결과를 RRF로 병합 재정렬하는 노드."""
+    hits_map: dict[str, dict] = dict(state.get("bm25_hits") or {})
 
-        results: list[str] = []
-        for i, hit in enumerate(hits, 1):
-            source = hit.get("_source", {})
-            content = source.get(CONTENT_FIELD, "")
-            metadata = source.get("metadata", {})
-            pdf_source = metadata.get("source", "")
-            page = metadata.get("page", "")
-            header = f"[{i}]" + (f" 출처: {pdf_source}" if pdf_source else "") + (f" p.{page}" if page else "")
-            snippet = content[:400].replace("\n", " ")
-            results.append(f"{header}\n{snippet}")
+    for doc_id, entry in (state.get("knn_hits") or {}).items():
+        if doc_id in hits_map:
+            hits_map[doc_id]["ranks"].extend(entry["ranks"])
+        else:
+            hits_map[doc_id] = entry
 
-        return {"query": query, "result": "\n\n".join(results)}
-    except Exception as e:
-        return {"query": query, "result": f"검색 중 오류가 발생했습니다: {e}"}
+    if not hits_map:
+        return {"result": f"'{state['query']}'에 대한 관련 정보를 찾을 수 없습니다."}
+
+    hits = _rrf_rerank(hits_map)
+
+    results: list[str] = []
+    for i, hit in enumerate(hits, 1):
+        source = hit.get("_source", {})
+        content = source.get(CONTENT_FIELD, "")
+        metadata = source.get("metadata", {})
+        pdf_source = metadata.get("source", "")
+        page = metadata.get("page", "")
+        header = f"[{i}]" + (f" 출처: {pdf_source}" if pdf_source else "") + (f" p.{page}" if page else "")
+        snippet = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", content[:400]).replace("\n", " ")
+        results.append(f"{header}\n{snippet}")
+
+    return {"result": "\n\n".join(results)}
 
 
 def _build_search_graph():
+    """
+    진정한 병렬 검색 그래프:
+    query_vector는 그래프 진입 전에 사전 생성 → state에 포함
+
+    START
+      ├── bm25_node  ← 병렬
+      └── knn_node   ← 병렬
+             │
+        rerank_node → END
+    """
     builder = StateGraph(_SearchState)
-    builder.add_node("search", _search_node)
-    builder.set_entry_point("search")
-    builder.add_edge("search", END)
+
+    builder.add_node("bm25", _bm25_node)
+    builder.add_node("knn", _knn_node)
+    builder.add_node("rerank", _rerank_node)
+
+    # fan-out: bm25 + knn 동시 실행
+    builder.add_edge(START, "bm25")
+    builder.add_edge(START, "knn")
+    # fan-in: 둘 다 완료 후 rerank
+    builder.add_edge("bm25", "rerank")
+    builder.add_edge("knn", "rerank")
+    builder.add_edge("rerank", END)
+
     return builder.compile()
 
 
@@ -168,5 +201,13 @@ _search_graph = _build_search_graph()
 def search_symptoms(search_query: str) -> str:
     """강아지 증상 및 질환 관련 의료 정보를 검색합니다.
     구토, 식욕부진, 기침, 절뚝거림 등 증상과 의심 질환 정보 검색에 사용하세요."""
-    result = _search_graph.invoke({"query": search_query})
+    # 그래프 진입 전 임베딩 사전 생성 → bm25/knn 진정한 병렬 실행 가능
+    query_vector = _get_query_vector(search_query)
+    result = _search_graph.invoke({
+        "query": search_query,
+        "query_vector": query_vector,
+        "bm25_hits": {},
+        "knn_hits": {},
+        "result": "",
+    })
     return result["result"]
